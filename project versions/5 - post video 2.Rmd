@@ -1,0 +1,708 @@
+---
+title: "Relashionship between RRIFs and Credit Limit"
+author: "Catherine Al Aswad, Ali Alhakeem, Uyen Dao, Long Kim Long"
+date: " Last Updated 12/08/2020"
+output:
+  html_document:
+    fig_caption: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    df_print: kable
+    toc_float:
+      collapsed: no
+---
+
+```{r, include=FALSE}
+# Do not edit this code block/chunk
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning = FALSE, fig.width = 16/2.5, fig.height = 9/2.5)
+```
+
+
+```{r Packages}
+# Load all necessary packages here:
+library(tidyverse) 
+library(janitor)
+library(moderndive)
+library(here)
+library(knitr)
+library(readxl)
+library(MASS)    #for box-cox
+library(car)    #for vif and qqplot() and 3d graphs
+library(olsrr)   # cook's distance
+library(splines)
+library(kableExtra)
+library(plotly)   # for interactive graphs
+library(lspline)   # for linear spline
+library(dagitty)   # dag diagram
+library(ggdag)   # plot dag
+
+
+
+
+```
+
+```{r Wrangling}
+# data wrangling code:
+#reading in the code
+# 12,429 observations
+original_data <- read_csv(here("creditdata2.csv"))
+colnames(original_data) <- c("TotalCreditLimit" ,"DwellingType" , "After_tax_income" , "Members18to24" , "Members25to44", "Members45to64", "Members65up", "Province" , "RRIFs" , "NetworthOGCB" , "X11" )
+
+# Variables full name: Total credit limit on all credit cards owned, Type of dwelling, After-tax income, Presence (Yes/No) of persons in the family of ages 18 to 24, Presence (Yes/No) of persons in the family of ages 25 to 44, Presence (Yes/No) of persons in the family of ages 45 to 64. Presence (Yes/No) of persons in the family of age 65 and up, Province of residence for the family unit,  Registered retirement income funds (RRIFs) , Networth of the family unit (On going concern basis), column of NA values
+# 10,996 observations after filtering 
+tidy_data <- original_data %>%
+ dplyr::select(-c( "X11")) %>%
+ filter(TotalCreditLimit < 999996) %>%
+ na.omit() %>%
+mutate(Province = recode_factor(Province,                 
+                                 "10" = "NL",
+                                 "11" ="PE",
+                                 "12" ="NS",
+                                 "13" ="NB",
+                                 "24" ="QC",
+                                 "35" ="ON",
+                                 "46" ="MB",
+                                 "47" ="SK",
+                                 "48" ="AB",
+                                 "59" ="BC")) %>%
+   dplyr::select(-c( "DwellingType", "Members18to24" ,"Members25to44" , "Members45to64", "Members65up"))
+
+
+
+```
+
+
+***
+
+
+# I. Introduction
+
+***
+
+
+Figure 1: Relashionship Diagram
+```{r network_fig}
+
+dagify(
+  TCL ~ ATI + CS,
+  CS ~ RRIF + Prov,
+  RRIF ~ ATI + Age,
+  Sampl ~ ATI + Age + NW + Prov,
+  NW ~ ATI + RRIF,
+  exposure = "RRIF",
+  outcome = "TCL") %>% 
+  tidy_dagitty() %>%
+  node_dconnected("RRIF", "TCL", controlling_for = "ATI") %>%
+   ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col = c("#AB68C6", "#B86416","#B86416","#AE31C8","#952AAC","#63DFEC","#F6341D","#63DFEC")) +
+    geom_dag_text() +
+    theme_dag() + 
+  geom_dag_edges_fan(aes(edge_colour = c("black", "#AB68C6",  "#AB68C6",  "#AB68C6",  "#B86416",  "#B86416",  "#63DFEC",  "#AE31C8",  "#952AAC",  "#952AAC",  "#63DFEC",  "#AE31C8",  "black",  "black"))) 
+
+```
+
+
+
+
+```{r sample_table}
+tidy_data %>%
+  sample_n(5) %>%
+  kable(caption = "Table 1.Sample for 5 randomly chosen households of the data set used in this study") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+
+
+
+# II. Exploratory data analysis
+
+
+***
+
+```{r summary_table}
+
+tidy_data %>% 
+  summarize(n = n(), 
+            min = min(TotalCreditLimit , na.rm = T), 
+            median = median(TotalCreditLimit , na.rm = T), 
+            mean = mean(TotalCreditLimit , na.rm = T), 
+            max = max(TotalCreditLimit , na.rm = T),
+            sd = sd(TotalCreditLimit , na.rm = T))  %>%
+  kable(caption = "Table 2: Summary for the Total credit limit on all credit cards owned") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+```{r   D_TCL, fig.show="hold", out.width="50%"}
+
+par(mfrow=c(1,2))
+
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Total credit limit on all credit cards owned by members the household", caption = "Figure 2. Distribution for the response variable") +
+    theme_bw() +
+  theme(plot.caption = element_text(size = 12))
+
+ggplot(tidy_data,  aes(x= RRIFs)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Registered retirement income funds (RRIFs)", caption = "Figure 3. Distribution for the explanatory predictor variable of interest") +
+    theme_bw() +  
+  theme(plot.caption = element_text(size = 12))
+
+
+
+ggplot(tidy_data,  aes(x= After_tax_income)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "After-tax income of the household", caption = "Figure 4. Distribution for the confounding variable") +
+    theme_bw() +
+    theme(plot.caption = element_text(size = 12))
+
+
+
+ggplot(tidy_data,  aes(x= NetworthOGCB)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Networth of the family unit (On going concern basis)", caption = "Figure 5. Distribution for the samling indicator variable") +
+    theme_bw() +
+    theme(plot.caption = element_text(size = 12))
+
+
+```
+
+
+
+```{r   SC_RRIF, fig.show="hold", out.width="50%" }
+
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 6. Total credit limit on all credit cards owned against RRIFs. \n The red line is the best fit line.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 12))
+
+
+ggplot(tidy_data, aes(x= After_tax_income, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "After-tax income", caption = "Figure 7. Total credit limit against After-tax income. \n The red line is the best fit line. \n The blue curve is the Loess curve.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 12))
+
+
+
+ggplot(tidy_data, aes(x= NetworthOGCB, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "Networth of the family unit (On going concern basis)", caption = "Figure 8. Total credit limit against Networth of the family unit (On going concern basis). \n The red line is the best fit line.\n The blue curve is the Loess curve.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 10))
+
+
+ggplot(tidy_data, aes(x= Province, y=TotalCreditLimit)) +
+  geom_boxplot(fill = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+  labs(y = "Total credit limit", x = "Province", caption = "Figure 9.1. Total credit limit distribution, by Province.") +
+  theme_bw() +
+  theme(plot.caption = element_text(size = 12))
+
+
+
+```
+
+
+```{r EI_boxplot_levels, fig.align = "center"}
+
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit, color = Province)) +
+  geom_point(alpha = 0.4, pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4) +
+  scale_color_manual(values = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 9.2. Total credit limit against RRIFs, by Province.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5))
+
+```
+
+
+
+```{r EI_boxplot_levels_3, fig.align = "center"}
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit, color = Province)) +
+  geom_point(alpha = 0.4, pch = 1) +
+  scale_color_manual(values = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+   geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 9.3. Total credit limit against RRIFs, by Province.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5)) +
+  facet_wrap(~Province)
+
+```
+
+
+
+***
+
+
+
+# III. Multiple linear regression
+
+## i. Methods
+
+```{r mod_transf_box, include = FALSE}
+
+ y_model = lm( TotalCreditLimit ~ 1 , data = tidy_data)
+
+transformation_test = MASS::boxcox(y_model)
+lambda = transformation_test$x[which(transformation_test$y == max(transformation_test$y))]
+lambda
+```
+
+```{r   D_TCL_t, fig.align = "center"}
+# 
+# tidy_data["TotalCreditLimit_transf"] <- (tidy_data$TotalCreditLimit)^(1/5)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.2") +
+#     theme_bw()
+# 
+# 
+# 
+# tidy_data["TotalCreditLimit_transf2"] <- (tidy_data$TotalCreditLimit)^(1/3)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf2)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.333") +
+#     theme_bw()
+# 
+# tidy_data["TotalCreditLimit_transf3"] <- (tidy_data$TotalCreditLimit)^(1/2)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf3)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.5") +
+#     theme_bw()
+
+tidy_data["TotalCreditLimit_transf"] <- log(tidy_data$TotalCreditLimit)
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit_transf)) +
+  geom_histogram(bins = 25, fill = "#B86416", color = "#ff6600", alpha = 0.7) +
+  labs(x = "log(Total credit limit on all credit cards owned)", caption = "Figure 10. Distribution for the log of the Total credit limit.") +
+    theme_bw()
+
+
+
+
+```
+
+
+
+```{r corr_matrix, fig.align = "center", include = FALSE}
+
+
+filtered  <- tidy_data %>%
+   ungroup() %>%
+     dplyr::select(-c("Province"))
+
+
+
+ corr_mat <- cor(filtered)
+  kable(corr_mat, 
+        digits = 3,
+        caption = "Table 3: Correlation matrix")
+
+```
+
+
+
+Using the following model: 
+
+```{r  primary_model}
+
+# 
+# # 6 knots
+#  first_model_3 = lm(TotalCreditLimit_transf ~ ns(RRIFs, df = 5) + ns(After_tax_income, df = 5) + Province + ns(NetworthOGCB, df = 5), data = tidy_data)
+#  
+#  # 5 knots
+#  first_model_2 = lm(TotalCreditLimit_transf ~ ns(RRIFs, df = 4) + ns(After_tax_income, df = 4) + Province + ns(NetworthOGCB, df = 4), data = tidy_data)
+# 
+#  
+#   first_model_1 = lm(TotalCreditLimit_transf ~ RRIFs + ns(After_tax_income, df = 4) + Province + ns(NetworthOGCB, knots=quantile(NetworthOGCB, probs=c(0.275, 0.5, 0.725)), Boundary.knots = quantile(NetworthOGCB, probs=c(0.05, 0.95))), data = tidy_data)
+
+first_model = lm(TotalCreditLimit_transf ~ RRIFs + ns(After_tax_income, df = 4) + Province +  ns(NetworthOGCB, df = 5), data = tidy_data)
+
+ # AIC(first_model)
+ # AIC(first_model_2)
+
+summary(first_model)$call
+
+
+
+```
+
+
+
+```{r qqplots ,fig.cap= "Figure 11. Normal Q-Qplot for the log of the Total credit limit.", fig.align = "center"}
+
+qqnorm(tidy_data$TotalCreditLimit_transf, pch = 1, frame = TRUE)
+qqline(tidy_data$TotalCreditLimit_transf, col = "#3080cf", lwd = 2)
+
+```
+
+```{r rez_dis, fig.show="hold", out.width="50%"}
+
+regression_points <-  data.frame(resid(first_model))
+colnames(regression_points) <- "residuals"
+ggplot(regression_points, aes(x = residuals)) +
+  geom_histogram(bins = 20, colour="#ff6600", fill = "#3080cf", alpha = 0.4) +
+  labs(x = "Residuals", caption =  "Figure 12. Residuals distribution for the statistical model") +
+  theme_bw() +
+  theme(plot.caption = element_text(size = 13))
+
+
+
+tidy_data["residuals"] <- resid(first_model)
+tidy_data["fitted"] <- predict(first_model)
+
+
+ggplot(tidy_data, aes(x = predict(first_model), y = resid(first_model))) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "Residuals", x = "Fitted Values", caption = "Figure 13. Residuals graph for the fitted values. \n The Loess smoothing curve is in blue. \n A horizontal line is at zero in red.") +
+  theme_bw() +   
+  theme(plot.caption = element_text(size = 13))
+
+
+```
+
+```{r rez_RIFF, fig.cap = "Figure 11. Residuals graph for the Registered retirement income funds (RRIFs), with a horizontal line at zero in red.", fig.align = "center", include = FALSE}
+
+# par(mfrow=c(1,2))
+
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = RRIFs, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "Registered retirement income funds (RRIFs)") +
+  theme_bw()
+
+
+```
+
+
+```{r rez_ATI, fig.cap = "Figure 12. Residuals graph for After-tax income, with a loess smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center" , include = FALSE}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = After_tax_income, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "After-tax income") +
+  theme_bw()
+
+```
+
+
+```{r rez_nw, fig.cap = "Figure 13. Residuals graph for Networth of the family unit (On going concern basis), with a loess smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center", include = FALSE}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = NetworthOGCB, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "Networth of the family unit (On going concern basis)") +
+  theme_bw()
+
+```
+
+
+
+```{r   model_vifs}
+
+kable(car::vif(first_model),
+      caption = "Table 4: VIF table") %>%
+  kable_styling(full_width = F)
+
+
+# p < m/15
+
+```
+
+***
+
+
+## ii. Model Results and Interpretation
+
+
+Our model is the following:
+
+```{r model_eq}
+
+summary(first_model)$call
+
+
+```
+***
+
+```{r   transf_model_summary_overall}
+
+kable(summary(first_model)$coefficients, 
+      digits = 4,
+      caption = "Table 5. Model Summary Table") %>%
+  kable_styling(full_width = F)
+
+#Residual Standard error (Like Standard Deviation)
+RSE <- summary(first_model)$sigma #Residual Standard Error
+RSE_df <- summary(first_model)$df[2] #Residual Standard Error df
+MR_2 <- summary(first_model)$r.squared #Multiple R-squared
+AR_2 <- summary(first_model)$adj.r.squared # adjusted R-squared
+FS <- summary(first_model)$fstatistic[1]   # f-statistic
+fs_n <- summary(first_model)$fstatistic[2]   # f-statistic numerator df
+fs_d <- summary(first_model)$fstatistic[3]   # f-statistic denominator df
+fs_p <- pf(summary(first_model)$fstatistic[1],summary(first_model)$fstatistic[2],summary(first_model)$fstatistic[3],lower.tail=FALSE)
+
+new_summary_1 <- data.frame() %>% 
+  rbind(list("Residual Standard Error", RSE, RSE_df),
+      list("Multiple R-squared", MR_2, ""),
+      list("Adjusted R-squared", AR_2, "")) %>%
+kable(format = "html", 
+      digits = 3, 
+      table.attr = "style='width:30%;'", 
+      col.names = c("", "Value", "df"),
+      row.names = FALSE) %>%
+  kable_styling(full_width = F)
+
+
+new_summary_2 <- data.frame() %>% 
+  rbind(list("Model F-statistic", FS, fs_n, fs_d),
+      list("P-value", fs_p, "", "")) %>%
+  mutate_if(is.numeric, funs(as.character(signif(., 4)))) %>%
+kable(format = "html", 
+      digits = 3, 
+      table.attr = "style='width:80%;'",
+      col.names = c("", "Value", "Numerator df", "Denominator df"),
+      row.names = FALSE) %>%
+  kable_styling(full_width = F)
+
+new_summary_1
+new_summary_2
+
+```
+
+
+
+
+
+
+
+$$\begin{aligned} H_0:&\beta_{RRIFs} = 0 \\\ \mbox{vs }H_A:& \beta_{RRIFs} \neq 0 \end{aligned}$$
+
+
+```{r transf_model_CI}
+kable(confint(first_model)[2,],
+       col.names = "RRIFs",
+      digits = 9, 
+      caption = "Table 6. The 95% RRIF Confidence Interval.")
+
+```
+
+***
+
+
+## iii. Inference for multiple regression
+
+
+Table 7. ANOVA Table
+```{r   transf_anova_table}
+ kable(anova(first_model), 
+       digits = 4,
+       caption = "Table 7. ANOVA Table") %>%
+  kable_styling(full_width = F)
+```
+
+
+```{r  spline_model_1, fig.cap =  "Figure 22. Interactive Scatterplot for the log of the total credit limit of a household against RRIF, where networth is at its median = 507100, after tax income is at its median = 67162.5, and in the saskatchewan province. The blue line is the model, with its associated 95% CI and wider pink 95% PI.", fig.align = "center", include = FALSE}
+
+# NetworthOGCB_m <- tidy_data %>% 
+#   summarize(median = median(NetworthOGCB , na.rm = T))         # 507100
+# ATI_m <- tidy_data %>% 
+#   summarize(median = median(After_tax_income , na.rm = T))      # 67162.5	
+# 
+# 
+# # Get min/max values of rrif using the range() function
+# rrif_lim = tidy_data %>%
+#     select(RRIFs) %>%
+#     range
+# 
+# # Generate a sequence of SI values spanning the range
+# rrif_grid = seq(from = min(rrif_lim), to = max(rrif_lim))
+# 
+# 
+# # Predict the value of the generated ages,
+# # returning the standard error using se = TRUE
+# pred = predict(first_model, newdata = data.frame(RRIFs = rrif_grid ,
+#                                    NetworthOGCB = 507100,
+#                                    After_tax_income = 67162.5	,
+#                                    Province = "SK"),
+#                interval="prediction",
+#                level=.95)
+# 
+# 
+# pred_2 = predict(first_model, newdata = data.frame(RRIFs = rrif_grid ,
+#                                    NetworthOGCB = 507100,
+#                                    After_tax_income = 67162.5	,
+#                                    Province = "SK"),
+#                interval="confidence",
+#                level=.95)
+# 
+# 
+# # Plot the spline and error bands
+# 
+# ggplot() +
+#   geom_point(data = tidy_data, aes(x = RRIFs, y = TotalCreditLimit), alpha = 0.4)  +
+#   geom_line(aes(x = rrif_grid, y = pred[,"fit"]), color = "#3080cf")   +
+  # geom_ribbon(aes(x = rrif_grid,
+  #                 ymin = pred[,"lwr"], 
+  #                 ymax = pred[,"upr"]),
+  #             alpha = 0.1,
+  #             fill = "red") +
+  # geom_ribbon(aes(x = rrif_grid,
+  #                 ymin = pred_2[,"lwr"], 
+  #                 ymax = pred_2[,"upr"]),
+  #             alpha = 0.1,
+  #             fill = "#3080cf")+
+  # xlim(rrif_lim) +
+  # scale_color_gradient(low="#ffff00", high="brown") +
+  # labs(y = "Log of the Total Credit limit", x = "RRIFs") +
+  # theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+  #       panel.grid.minor = element_line(colour = "#DCDCDC"),
+  #       axis.line = element_line(colour = "black"),
+  #       panel.background = element_blank(),
+  #       panel.border = element_rect(colour = "black",
+  #                                   fill=NA,
+  #                                   size=0.5))
+
+
+
+
+
+
+```
+
+
+```{r transf_model_PI}
+
+
+values = c(0, 10, 10000, 500000, 1000000)
+
+PI <- data.frame(predict(first_model, 
+              newdata=data.frame(NetworthOGCB = 507100,
+                                   After_tax_income = 67162.5	,
+                                   Province = "SK", 
+                                 RRIFs = values), 
+              interval="prediction", level=.95))
+PI$RRIF <- values
+
+PI <- PI %>%
+  dplyr::select(c(RRIF, fit, lwr, upr)) 
+colnames(PI) <- c("RRIF" , "Point Estimate" , "Lower Limit" , "Upper Limit")
+
+kable(PI,
+    digits = 5,
+    caption = "Table 8. The 95% Prediction intervals for the log of Total credit limit on all credit cards owned, where RRIFs = 0, 10, 10000, 500000, 1000000, respectively, for networth equal to its median = 507100, after tax income equal to its median = 67162.5, and in the saskatchewan province.") %>%
+  kable_styling(full_width = F)
+
+
+
+```
+
+
+# IV. Discussion 
+
+## i. Conclusions
+
+
+
+## ii. Limitations
+
+Figure 13: Relationship Diagram
+```{r network_fig_complex}
+
+#CO: credit owed
+# rrifw : rrif yearly withdrawl
+# WTR:  withholding tax rates
+
+
+dagify(
+  TCL ~ ATI + CS,
+  CS ~ RRIF + RRIFW + Prov,
+  RRSP ~ ATI,
+  RRIF ~ RRSP + RRIFW + Age,
+  Sampl ~ ATI + Age + NW + RU,
+  NW ~ ATI + RRIF,
+  RU ~ Prov,
+  exposure = "RRIF",
+  outcome = "TCL") %>% 
+  tidy_dagitty() %>%
+  node_dconnected("RRIF", "TCL", controlling_for = "ATI") %>%
+   ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col = c("#AB68C6", "#B86416","#B86416","#AE31C8","#952AAC","#63DFEC","#C01DF6","#C01DF6", "#C01DF6","#F6341D","#63DFEC")) +
+    geom_dag_text() +
+    theme_dag() + 
+  geom_dag_edges_fan(aes(edge_colour = c("black", "#AB68C6",  "#AB68C6",  "#AB68C6",  "#B86416",  "#B86416",  "#63DFEC",  "#AE31C8",  "#952AAC",  "#952AAC",  "#63DFEC",  "#AE31C8",  "#AB68C6",  "#AB68C6",  "#AB68C6",  "#AB68C6",  "black",  "black"))) 
+
+
+
+
+
+```
+
+
+## iii. Further questions
+
+
+
+***
+
+
+# V. Citations and References {-}

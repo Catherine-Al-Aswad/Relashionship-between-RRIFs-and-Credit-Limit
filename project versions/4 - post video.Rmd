@@ -1,0 +1,798 @@
+---
+title: "Relashionship between RRIFs and Credit Limit"
+author: "Catherine Al Aswad, Ali Alhakeem, Uyen Dao, Long Kim Long"
+date: " Last Updated 12/08/2020"
+output:
+  html_document:
+    fig_caption: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    df_print: kable
+    toc_float:
+      collapsed: no
+---
+
+```{r, include=FALSE}
+# Do not edit this code block/chunk
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning = FALSE, fig.width = 16/2.5, fig.height = 9/2.5)
+```
+
+
+```{r Packages}
+# Load all necessary packages here:
+library(tidyverse) 
+library(janitor)
+library(moderndive)
+library(here)
+library(knitr)
+library(readxl)
+library(MASS)    #for box-cox
+library(car)    #for vif and qqplot() and 3d graphs
+library(olsrr)   # cook's distance
+library(splines)
+library(kableExtra)
+library(plotly)   # for interactive graphs
+library(lspline)   # for linear spline
+library(dagitty)   # dag diagram
+library(ggdag)   # plot dag
+
+
+
+
+```
+
+```{r Wrangling}
+# data wrangling code:
+#reading in the code
+# 12,429 observations
+original_data <- read_csv(here("creditdata2.csv"))
+colnames(original_data) <- c("TotalCreditLimit" ,"DwellingType" , "After_tax_income" , "Members18to24" , "Members25to44", "Members45to64", "Members65up", "Province" , "RRIFs" , "NetworthOGCB" , "X11" )
+
+# Variables full name: Total credit limit on all credit cards owned, Type of dwelling, After-tax income, Presence (Yes/No) of persons in the family of ages 18 to 24, Presence (Yes/No) of persons in the family of ages 25 to 44, Presence (Yes/No) of persons in the family of ages 45 to 64. Presence (Yes/No) of persons in the family of age 65 and up, Province of residence for the family unit,  Registered retirement income funds (RRIFs) , Networth of the family unit (On going concern basis), column of NA values
+# 10,314 observations after filtering 
+tidy_data <- original_data %>%
+ dplyr::select(-c( "X11")) %>%
+ filter(TotalCreditLimit < 999996 & DwellingType < 9 & Members18to24 < 9 & Members25to44 < 9 & Members45to64 < 9 & Members65up < 9) %>%
+ na.omit() %>%
+ mutate(DwellingType = recode_factor(DwellingType,                 
+                                 "1" = "SingleDetached",
+                                 "2" = "DoubleDetached_Terrace_Duplex",
+                                 "3" = "Apartment" ,
+                                 "4" = "Other")) %>%
+mutate(Members18to24 = recode_factor(Members18to24,                 
+                                 "1" = "Yes",
+                                 "2" ="No")) %>%
+mutate(Members25to44 = recode_factor(Members25to44,                 
+                                 "1" = "Yes",
+                                 "2" ="No")) %>%
+mutate(Members45to64 = recode_factor(Members45to64,                 
+                                 "1" = "Yes",
+                                 "2" ="No"))  %>%
+mutate(Members65up = recode_factor(Members65up,                 
+                                 "1" = "Yes",
+                                 "2" ="No")) %>%
+mutate(Province = recode_factor(Province,                 
+                                 "10" = "NL",
+                                 "11" ="PE",
+                                 "12" ="NS",
+                                 "13" ="NB",
+                                 "24" ="QC",
+                                 "35" ="ON",
+                                 "46" ="MB",
+                                 "47" ="SK",
+                                 "48" ="AB",
+                                 "59" ="BC")) %>%
+   dplyr::select(-c( "DwellingType", "Members18to24" ,"Members25to44" , "Members45to64", "Members65up"))
+
+
+
+```
+
+
+***
+
+
+# I. Introduction
+
+***
+
+The goal of this study is to study the relationship between Registered Retirement Income Funds (RRIFs) and credit limit on a credit card. The data from the NESSTAR data portal and collected using the 2016 Survey of Financial Security (SFS)^[ _Survey of Financial Security, 2016_. Statistical Canada Public Use Microdata Files (PUMF). 2018. Accessed November 2020 http://dli-idd-nesstar.statcan.gc.ca.proxy.library.upei.ca/webview/.] on households in Canada will be used to study these relationships. The survey has a weighted design in order for the collected sample to be representative of the intended population. This study ignores the sampling weights and instead controls for the sampling indicators that create backdoor pathways in our causal model.  
+
+The data set has some missing values and some valid skips for the chosen variables. Since not enough information is provided about the reasons for the valid skips, altering the values without proper justification can create bias, so they will be considered as missing values. After handling the missing values, 10,314 households remain out of the original 12,429 household sample, which is about 82.98% of households from the original sample.
+
+
+## i. Causal Assumptions
+
+Figure 1 shows the causal assumptions made in this study. The continuous response variable of interest from this data set is the _Total Credit Limit on all credit cards owned by the household members_ (TCL, in blue). The main continuous explanatory variable of interest is the _Registered Retirement Income Funds for a household_ (RRIF, in blue). The causal relationship between RRIF and TCL is indicated by blue arrows, where  _Credit Score_ (CS. in brown) is a mediating variable along the pathway. When a person is retired, their balance is greatly determined by the amount of retirement funds they have, and that balance happens to be a factor in determining a person’s credit score.^[ _What Factors Impact My Credit Scores?_. Credit Scores Education, EQUIFAX. Accessed November 2020. https://www.consumer.equifax.ca/personal/education/credit-score/what-impacts-credit-score/] Then, a person’s credit score is one of the variables considered by banks when calculating a person’s credit limit.^[ _What is Your Credit Limit Based On_. How Your Credit Limit is Determined. Accessed November 2020. https://www.creditcardscanada.ca/education-centre/credit-card-basics/credit-limit-determined/ ].
+
+The sampling procedure, as indicated by the 2016 Survey of Financial Security (SFS) documentation, uses a stratified sampling method, with the first level of stratification being by _Province of residence for the family unit_ (Prov, in purple), allowing it to cause change in the sampling weights. Province can also cause changes in credit score, since the average Canadian credit score fluctuates by province.^[Wood, Caitlyn, “Average Credit Score by Province”. _Loans, Canada_. Accessed in December 2020. https://loanscanada.ca/credit/average-credit-score-by-province/#:~:text=Debt%20Levels%20Could%20Also%20Affect,average%20credit%20score%20by%20province.]
+
+The second stage of stratification is by _rural and urban areas_ in each province. Sampling in rural areas uses large geographic strata for the first stage of clustering. There are no variables in the data set to represent the second stage of stratification and the following stage of clustering. This bias will be addressed later in the report as a limitation. 
+
+In urban areas, variables such as _income_ and _age_ were used for the first stage of sample clustering. Then, dwellings are grouped by similar _Net Worth_. So, income, age, and net worth create changes in the sampling weights. Income, represented by _After-tax income for the household_ from the data set  (ATI, in purple), is a confounder in this relationship, as a change in income can cause a change in both RRIFs and credit limit. These causal relationships are justified, since income is another variable considered by banks when calculating a person’s credit limit^[ _What is Your Credit Limit Based On_. How Your Credit Limit is Determined. Accessed November 2020. https://www.creditcardscanada.ca/education-centre/credit-card-basics/credit-limit-determined/ ], and a person’s current income affects how much they reserve as retirement funds. _Age_ (in brown) causes changes in the sampling weights and in RRIF. The amount of money a person has in their RRIF is largely influenced by their age, since the older a person gets, the more money they have saved up from when they were younger, and reaching a certain age will require them to withdraw a certain amount of money, and that sum changes with each additional year.^[“RRIF annual withdrawal schedule”. _MD Financial Management_ . Accessed December 2020. https://mdm.ca/investing/investment-accounts/rrif/rrif-annual-withdrawals] Also, _Net worth of the family unit (On going concern basis)_ (NW, in purple) is on the causal pathway from RRIF to sampling. Here, net worth is the value of all assets of the household, minus the liabilities that they owe. The household’s after-tax income and RRIF are assets that belong to the household, so a change in these assets causes a change in their net worth. Since net worth is a sampling indicator, a change in net worth causes changes in the sampling weights. The black arrow from ATI to NW indicates a causal relationship from ATI to NW. However, it is not a relationship that affects the choice of variables that will be controlled for. 
+
+The relationship between RRIFs and Credit Limit is more complicated than this and may have more unidentified confounders, but due to the study’s limitations, a simpler model is adopted. 
+
+In the given diagram, variables in brown will not be controlled for, and variables in purple will be controlled for. Credit score is a mediating variable so it will  not be controlled for in order to avoid creating bias. ATI is a confounder, as previously stated, so it will be controlled for, in order to prevent creating bias. After controlling for ATI, there are still some backdoor pathways in our causal relationship of interest (RRIF -> CS -> TCL), created by Age, Province, and Net Worth. Due to the nature of the relationships in the diagram, only two of these three variables need to be controlled for. We decided to not control for Age (hence its brown color), since there are many variables in the data set that try to capture the ages of the household members, while the provided NW and Province variables are more straightforward, allowing for a simpler model. 
+
+Figure 1: Causal Relationship Diagram
+```{r network_fig}
+
+dagify(
+  TCL ~ ATI + CS,
+  CS ~ RRIF + Prov,
+  RRIF ~ ATI + Age,
+  Sampl ~ ATI + Age + NW + Prov,
+  NW ~ ATI + RRIF,
+  exposure = "RRIF",
+  outcome = "TCL") %>% 
+  tidy_dagitty() %>%
+  node_dconnected("RRIF", "TCL", controlling_for = "ATI") %>%
+   ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col = c("#AB68C6", "#B86416","#B86416","#AE31C8","#952AAC","#63DFEC","#F6341D","#63DFEC")) +
+    geom_dag_text() +
+    theme_dag() + 
+  geom_dag_edges_fan(aes(edge_colour = c("black", "#AB68C6",  "#AB68C6",  "#AB68C6",  "#B86416",  "#B86416",  "#63DFEC",  "#AE31C8",  "#952AAC",  "#952AAC",  "#63DFEC",  "#AE31C8",  "black",  "black"))) 
+
+```
+
+
+
+
+```{r sample_table}
+tidy_data %>%
+  sample_n(5) %>%
+  kable(caption = "Table 1.Sample for 5 randomly chosen households of the data set used in this study") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+
+
+
+# II. Exploratory data analysis
+
+
+***
+
+```{r summary_table}
+
+tidy_data %>% 
+  summarize(n = n(), 
+            min = min(TotalCreditLimit , na.rm = T), 
+            median = median(TotalCreditLimit , na.rm = T), 
+            mean = mean(TotalCreditLimit , na.rm = T), 
+            max = max(TotalCreditLimit , na.rm = T),
+            sd = sd(TotalCreditLimit , na.rm = T))  %>%
+  kable(caption = "Table 2: Summary for the Total credit limit on all credit cards owned") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+```{r   D_TCL, fig.show="hold", out.width="50%"}
+
+par(mfrow=c(1,2))
+
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Total credit limit on all credit cards owned by members the household", caption = "Figure 2. Distribution for the response variable") +
+    theme_bw() +
+  theme(plot.caption = element_text(size = 12))
+
+ggplot(tidy_data,  aes(x= RRIFs)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Registered retirement income funds (RRIFs)", caption = "Figure 3. Distribution for the explanatory predictor variable of interest") +
+    theme_bw() +  
+  theme(plot.caption = element_text(size = 12))
+
+```
+
+
+```{r   D_TL, fig.show="hold", out.width="50%"}
+
+ggplot(tidy_data,  aes(x= After_tax_income)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "After-tax income of the household", caption = "Figure 4. Distribution for the confounding variable") +
+    theme_bw() +
+    theme(plot.caption = element_text(size = 12))
+
+
+
+ggplot(tidy_data,  aes(x= NetworthOGCB)) +
+  geom_histogram(bins = 25, fill = "#C01DF6", color = "#6109de", alpha = 0.7) +
+  labs(x = "Networth of the family unit (On going concern basis)", caption = "Figure 5. Distribution for the samling indicator variable") +
+    theme_bw() +
+    theme(plot.caption = element_text(size = 12))
+
+
+```
+
+
+
+```{r   SC_RRIF, fig.show="hold", out.width="50%" }
+
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 6. Total credit limit on all credit cards owned against RRIFs. \n The red line is the best fit line.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 12))
+
+
+ggplot(tidy_data, aes(x= After_tax_income, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "After-tax income", caption = "Figure 7. Total credit limit against After-tax income. \n The red line is the best fit line. \n The blue curve is the Loess curve.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 12))
+
+```
+
+```{r   D_TCL_2, fig.show="hold", out.width="50%"}
+
+ggplot(tidy_data, aes(x= NetworthOGCB, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "#C01DF6", pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit", x = "Networth of the family unit (On going concern basis)", caption = "Figure 8. Total credit limit against Networth of the family unit (On going concern basis). \n The red line is the best fit line.\n The blue curve is the Loess curve.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5),
+        plot.caption = element_text(size = 10))
+
+
+ggplot(tidy_data, aes(x= Province, y=TotalCreditLimit)) +
+  geom_boxplot(fill = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+  labs(y = "Total credit limit", x = "Province", caption = "Figure 9.1. Total credit limit distribution, by Province.") +
+  theme_bw() +
+  theme(plot.caption = element_text(size = 12))
+
+
+
+```
+
+
+```{r EI_boxplot_levels, fig.align = "center", include = FALSE}
+
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit, color = Province)) +
+  geom_point(alpha = 0.4, pch = 1) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4) +
+  scale_color_manual(values = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 9.2. Total credit limit against RRIFs, by Province.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5))
+
+```
+
+
+
+```{r EI_boxplot_levels_3, fig.align = "center"}
+
+ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit, color = Province)) +
+  geom_point(alpha = 0.4, pch = 1) +
+  scale_color_manual(values = c( "#1D85F6" , "#166AB8", "#0B2374", "#3F971F",  "#74CC55", "#e4a01b", "#EC8D1D", "#A786CF", "#C01DF6", "#743D96")) +
+   geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  labs(y = "Total credit limit", x = "Registered retirement income funds (RRIFs)", caption = "Figure 9.2. Total credit limit against RRIFs, by Province.") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5)) +
+  facet_wrap(~Province)
+
+```
+
+
+
+***
+
+
+
+# III. Multiple linear regression
+
+## i. Methods
+
+```{r mod_transf_box, include = FALSE}
+
+ y_model = lm( TotalCreditLimit ~ 1 , data = tidy_data)
+
+transformation_test = MASS::boxcox(y_model)
+lambda = transformation_test$x[which(transformation_test$y == max(transformation_test$y))]
+lambda
+```
+
+```{r   D_TCL_t, fig.align = "center"}
+# 
+# tidy_data["TotalCreditLimit_transf"] <- (tidy_data$TotalCreditLimit)^(1/5)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.2") +
+#     theme_bw()
+# 
+# 
+# 
+# tidy_data["TotalCreditLimit_transf2"] <- (tidy_data$TotalCreditLimit)^(1/3)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf2)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.333") +
+#     theme_bw()
+# 
+# tidy_data["TotalCreditLimit_transf3"] <- (tidy_data$TotalCreditLimit)^(1/2)
+# 
+# ggplot(tidy_data,  aes(x= TotalCreditLimit_transf3)) +
+#   geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+#   labs(x = "(Total credit limit on all credit cards owned)^0.5") +
+#     theme_bw()
+
+tidy_data["TotalCreditLimit_transf"] <- log(tidy_data$TotalCreditLimit)
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit_transf)) +
+  geom_histogram(bins = 25, fill = "#B86416", color = "#ff6600", alpha = 0.7) +
+  labs(x = "log(Total credit limit on all credit cards owned)", caption = "Figure 10. Distribution for the log of the Total credit limit.") +
+    theme_bw()
+
+
+
+
+```
+
+
+
+```{r corr_matrix, fig.align = "center", include = FALSE}
+
+
+filtered  <- tidy_data %>%
+   ungroup() %>%
+     dplyr::select(-c("Province"))
+
+
+
+ corr_mat <- cor(filtered)
+  kable(corr_mat, 
+        digits = 3,
+        caption = "Table 3: Correlation matrix")
+
+```
+
+
+
+Using the following model: 
+
+```{r  primary_model}
+
+
+
+sorted <- tidy_data%>%
+  arrange(RRIFs) 
+
+
+# 6 knots
+ first_model_3 = lm(TotalCreditLimit_transf ~ ns(RRIFs, df = 5) + ns(After_tax_income, df = 5) + Province + ns(NetworthOGCB, df = 5), data = tidy_data)
+ 
+ # 5 knots
+ first_model_2 = lm(TotalCreditLimit_transf ~ ns(RRIFs, df = 4) + ns(After_tax_income, df = 4) + Province + ns(NetworthOGCB, df = 4), data = tidy_data)
+
+ 
+  first_model_1 = lm(TotalCreditLimit_transf ~ RRIFs + ns(After_tax_income, df = 4) + Province + ns(NetworthOGCB, knots=quantile(NetworthOGCB, probs=c(0.275, 0.5, 0.725)), Boundary.knots = quantile(NetworthOGCB, probs=c(0.05, 0.95))), data = tidy_data)
+
+first_model = lm(TotalCreditLimit_transf ~ RRIFs + ns(After_tax_income, df = 4) + Province +  ns(NetworthOGCB, df = 5), data = tidy_data)
+
+ # AIC(first_model)
+ # AIC(first_model_2)
+
+summary(first_model)$call
+
+
+
+```
+
+
+
+```{r qqplots ,fig.cap= "Figure 11. Normal Q-Qplot for the log of the Total credit limit.", fig.align = "center"}
+
+qqnorm(tidy_data$TotalCreditLimit_transf, pch = 1, frame = TRUE)
+qqline(tidy_data$TotalCreditLimit_transf, col = "#3080cf", lwd = 2)
+
+```
+
+```{r rez_dis, fig.show="hold", out.width="50%"}
+
+regression_points <-  data.frame(resid(first_model))
+colnames(regression_points) <- "residuals"
+ggplot(regression_points, aes(x = residuals)) +
+  geom_histogram(bins = 20, colour="#ff6600", fill = "#3080cf", alpha = 0.4) +
+  labs(x = "Residuals", caption =  "Figure 12. Residuals distribution for the statistical model") +
+  theme_bw() +
+  theme(plot.caption = element_text(size = 13))
+
+
+
+tidy_data["residuals"] <- resid(first_model)
+tidy_data["fitted"] <- predict(first_model)
+
+
+ggplot(tidy_data, aes(x = predict(first_model), y = resid(first_model))) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "Residuals", x = "Fitted Values", caption = "Figure 13. Residuals graph for the fitted values. \n The Loess smoothing curve is in blue. \n A horizontal line is at zero in red.") +
+  theme_bw() +   
+  theme(plot.caption = element_text(size = 13))
+
+
+```
+
+```{r rez_RIFF, fig.cap = "Figure 11. Residuals graph for the Registered retirement income funds (RRIFs), with a horizontal line at zero in red.", fig.align = "center", include = FALSE}
+
+# par(mfrow=c(1,2))
+
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = RRIFs, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "Registered retirement income funds (RRIFs)") +
+  theme_bw()
+
+
+```
+
+
+```{r rez_ATI, fig.cap = "Figure 12. Residuals graph for After-tax income, with a loess smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center" , include = FALSE}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = After_tax_income, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "After-tax income") +
+  theme_bw()
+
+```
+
+
+```{r rez_nw, fig.cap = "Figure 13. Residuals graph for Networth of the family unit (On going concern basis), with a loess smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center", include = FALSE}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = NetworthOGCB, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "Networth of the family unit (On going concern basis)") +
+  theme_bw()
+
+```
+
+
+In table 3, we see that the GVIF value for the variables with 1 degree of freedom each, and the GVIF^(1/(2*Df)) value for the variables with more than 1 degree of freedom each are all between 1 and 5. This indicates that there is moderate correlation between the predictor variables. Since there is not a lot of multicollinearity between the predictor variables, the statistical power of the model is not greatly reduced, and we can perform the desired causal inference.
+
+```{r   model_vifs}
+
+kable(car::vif(first_model),
+      caption = "Table 3: VIF table") %>%
+  kable_styling(full_width = F)
+
+
+# p < m/15
+
+```
+
+***
+
+
+## ii. Model Results and Interpretation
+
+
+Our model is the following:
+
+```{r model_eq}
+
+summary(first_model)$call
+
+
+```
+***
+
+```{r   transf_model_summary_overall}
+
+kable(summary(first_model)$coefficients, 
+      digits = 9,
+      caption = "Table 4. Model Summary Table") %>%
+  kable_styling(full_width = F)
+
+#Residual Standard error (Like Standard Deviation)
+RSE <- summary(first_model)$sigma #Residual Standard Error
+RSE_df <- summary(first_model)$df[2] #Residual Standard Error df
+MR_2 <- summary(first_model)$r.squared #Multiple R-squared
+AR_2 <- summary(first_model)$adj.r.squared # adjusted R-squared
+FS <- summary(first_model)$fstatistic[1]   # f-statistic
+fs_n <- summary(first_model)$fstatistic[2]   # f-statistic numerator df
+fs_d <- summary(first_model)$fstatistic[3]   # f-statistic denominator df
+fs_p <- pf(summary(first_model)$fstatistic[1],summary(first_model)$fstatistic[2],summary(first_model)$fstatistic[3],lower.tail=FALSE)
+
+new_summary_1 <- data.frame() %>% 
+  rbind(list("Residual Standard Error", RSE, RSE_df),
+      list("Multiple R-squared", MR_2, ""),
+      list("Adjusted R-squared", AR_2, "")) %>%
+kable(format = "html", 
+      digits = 3, 
+      table.attr = "style='width:30%;'", 
+      col.names = c("", "Value", "df"),
+      row.names = FALSE) %>%
+  kable_styling(full_width = F)
+
+
+new_summary_2 <- data.frame() %>% 
+  rbind(list("Model F-statistic", FS, fs_n, fs_d),
+      list("P-value", fs_p, "", "")) %>%
+  mutate_if(is.numeric, funs(as.character(signif(., 4)))) %>%
+kable(format = "html", 
+      digits = 3, 
+      table.attr = "style='width:80%;'",
+      col.names = c("", "Value", "Numerator df", "Denominator df"),
+      row.names = FALSE) %>%
+  kable_styling(full_width = F)
+
+new_summary_1
+new_summary_2
+
+```
+
+Given the linear expression of RRIF in our model, we find the coefficient representing the slope to be -0.000000181 with a p-value of 0.0613 higher than our significance level of 0.05.
+
+
+
+Using our 95% confidence interval table (Table 5) output, we conduct a hypothesis test with the null hypothesis stating that the slope is 0 and the alternative hypothesis stating that the slope is non-zero and either positive or negative.
+
+
+$$\begin{aligned} H_0:&\beta_{RRIFs} = 0 \\\ \mbox{vs }H_A:& \beta_{RRIFs} \neq 0 \end{aligned}$$
+
+Seeing that our 95% confidence interval [-3.7e-07, 9.0e-09] we see that it includes 0, therefore we fail to reject the null hypothesis that the slope is 0. 
+
+```{r transf_model_CI}
+kable(confint(first_model)[2,],
+       col.names = "RRIFs",
+      digits = 9, 
+      caption = "Table 5. The 95% RRIF Confidence Interval.")
+
+```
+
+***
+
+
+## iii. Inference for multiple regression
+
+From the ANOVA table in table 6, the RRIFs with 1 degree of freedom add 84.89 sum of squares. With an F value =97.96 and p-value equals 0.0001, we can conclude that the RRIFs alone in the model explains a significant amount of variability.
+
+The After tax income variable with 5 knots and 4 degrees of freedom keeps adding 3038.0671 sum of squares. With an F value =876.4306 and p-value equals 0.0001, we can conclude that the After tax income variable, given that the RRIFs in the model, is statistically significant.
+
+The Province variable with 9 degrees of freedom keeps adding 89.5314 sum of squares. With an F value =11.4792 and p-value equals 0.0001, we can conclude that the Province variable, given that the RRIFs and After tax income with 5 knots in the model, is statistically significant.
+
+The NetworthOGCB variable with 6 knots and 5 degrees of freedom keeps adding 1266.6648 sum of squares. With an F value =292.3290 and p-value equals 0.0001, we can conclude that the NetworthOGCB variable, given that the RRIFs, After tax income with 5 knots, and Province variable in the model, is statistically significant.
+
+
+```{r   transf_anova_table}
+ kable(anova(first_model), 
+       digits = 4,
+       caption = "Table 6. ANOVA Table") %>%
+  kable_styling(full_width = F)
+```
+
+
+```{r  spline_model_1, fig.cap =  "Figure 22. Interactive Scatterplot for the log of the total credit limit of a household against RRIF, where networth is at its median = 507100, after tax income is at its median = 67162.5, and in the saskatchewan province. The blue line is the model, with its associated 95% CI and wider pink 95% PI.", fig.align = "center", include = FALSE}
+
+# NetworthOGCB_m <- tidy_data %>% 
+#   summarize(median = median(NetworthOGCB , na.rm = T))         # 507100
+# ATI_m <- tidy_data %>% 
+#   summarize(median = median(After_tax_income , na.rm = T))      # 67162.5	
+# 
+# 
+# # Get min/max values of rrif using the range() function
+# rrif_lim = tidy_data %>%
+#     select(RRIFs) %>%
+#     range
+# 
+# # Generate a sequence of SI values spanning the range
+# rrif_grid = seq(from = min(rrif_lim), to = max(rrif_lim))
+# 
+# 
+# # Predict the value of the generated ages,
+# # returning the standard error using se = TRUE
+# pred = predict(first_model, newdata = data.frame(RRIFs = rrif_grid ,
+#                                    NetworthOGCB = 507100,
+#                                    After_tax_income = 67162.5	,
+#                                    Province = "SK"),
+#                interval="prediction",
+#                level=.95)
+# 
+# 
+# pred_2 = predict(first_model, newdata = data.frame(RRIFs = rrif_grid ,
+#                                    NetworthOGCB = 507100,
+#                                    After_tax_income = 67162.5	,
+#                                    Province = "SK"),
+#                interval="confidence",
+#                level=.95)
+# 
+# 
+# # Plot the spline and error bands
+# 
+# ggplot() +
+#   geom_point(data = tidy_data, aes(x = RRIFs, y = TotalCreditLimit), alpha = 0.4)  +
+#   geom_line(aes(x = rrif_grid, y = pred[,"fit"]), color = "#3080cf")   +
+  # geom_ribbon(aes(x = rrif_grid,
+  #                 ymin = pred[,"lwr"], 
+  #                 ymax = pred[,"upr"]),
+  #             alpha = 0.1,
+  #             fill = "red") +
+  # geom_ribbon(aes(x = rrif_grid,
+  #                 ymin = pred_2[,"lwr"], 
+  #                 ymax = pred_2[,"upr"]),
+  #             alpha = 0.1,
+  #             fill = "#3080cf")+
+  # xlim(rrif_lim) +
+  # scale_color_gradient(low="#ffff00", high="brown") +
+  # labs(y = "Log of the Total Credit limit", x = "RRIFs") +
+  # theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+  #       panel.grid.minor = element_line(colour = "#DCDCDC"),
+  #       axis.line = element_line(colour = "black"),
+  #       panel.background = element_blank(),
+  #       panel.border = element_rect(colour = "black",
+  #                                   fill=NA,
+  #                                   size=0.5))
+
+
+
+
+
+
+```
+
+The 95% Prediction Intervals:
+For the 95% Prediction Interval, any household with RRIFs level equals 0, net worth equal to its median = 507100, the after tax income equal to its median = 67162.5 and they live in Saskatchewan province, their log of total credit limit on all credit card owned can be predicted at 9.55708 with the lower limit is 7.73 and upper limit is 11.38369. 
+
+With those households holding the same value with net worth equal to its median = 507100, the after tax income equal to its median = 67162.5 and they live in Saskatchewan province. The Prediction Interval table below shows the predicted log of total credit limit on all credit card owned for RRIFs (at 10,10000, 500000, 1000000)
+
+
+```{r transf_model_PI}
+
+
+values = c(0, 10, 10000, 500000, 1000000)
+
+PI <- data.frame(predict(first_model, 
+              newdata=data.frame(NetworthOGCB = 507100,
+                                   After_tax_income = 67162.5	,
+                                   Province = "SK", 
+                                 RRIFs = values), 
+              interval="prediction", level=.95))
+PI$RRIF <- values
+
+PI <- PI %>%
+  dplyr::select(c(RRIF, fit, lwr, upr)) 
+colnames(PI) <- c("RRIF" , "Point Estimate" , "Lower Limit" , "Upper Limit")
+
+kable(PI,
+    digits = 5,
+    caption = "Table 7. The 95% Prediction intervals for the log of Total credit limit on all credit cards owned, where RRIFs = 0, 10, 10000, 500000, 1000000, respectively, for networth equal to its median = 507100, after tax income equal to its median = 67162.5, and in the saskatchewan province.") %>%
+  kable_styling(full_width = F)
+
+
+
+```
+
+
+# IV. Discussion 
+
+## i. Conclusions
+
+
+
+## ii. Limitations
+
+This report has many sources of bias due to present limitations. Sample indicators such as rural/urban location of residence and geographical strata were not provided in the data set, so they cannot be controlled for if necessary, and that is a source of bias.
+ 
+Failing to control for other existing confounding variables that affect our variables of interest also creates bias. As mentioned in the introduction, the relationships between the variables is more complicated than previously stated. A possible more intricate relationship diagram can be seen in figure 13. 
+ 
+
+Figure 13: Relationship Diagram
+```{r network_fig_complex}
+
+#CO: credit owed
+# rrifw : rrif yearly withdrawl
+# WTR:  withholding tax rates
+
+
+dagify(
+  TCL ~ ATI + CS,
+  CS ~ RRIF + RRIFW + Prov,
+  RRSP ~ ATI,
+  RRIF ~ RRSP + RRIFW,
+  Sampl ~ ATI + Age + NW + Geo,
+  Geo ~ RU, 
+  NW ~ ATI + RRIF,
+  RRIFW ~ Age,
+  RU ~ Prov,
+  exposure = "RRIF",
+  outcome = "TCL") %>% 
+  tidy_dagitty() %>%
+  node_dconnected("RRIF", "TCL", controlling_for = "ATI") %>%
+   ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col = c("#AB68C6", "#B86416","#B86416","#C01DF6","#B86416","#AB68C6","#63DFEC" ,"#C01DF6", "#B86416", "#C01DF6","#F6341D","#63DFEC")) +
+    geom_dag_text() +
+    theme_dag() + 
+  geom_dag_edges_fan(aes(edge_colour = c("#B86416", "#AB68C6",  "#AB68C6",  "#AB68C6",  "#B86416",  "#B86416",  "#63DFEC",  "#C01DF6",  "#B86416",  "#AB68C6",  "#AB68C6",  "#63DFEC",  "#B86416",  "#AB68C6",  "#AB68C6",  "#AB68C6",  "#C01DF6",  "black", "black"))) 
+
+
+
+
+
+```
+
+
+It can still be assumed that a change in RRIF (in blue), causes a change in credit score (CS, in brown), which causes a change in credit limit (TCL, in blue). Also, the sampling indicator net worth (NW, in purple) variable has the same relationships in figure 13 as in figure 1.
+ 
+A change in the amount of money from the RRIF withdrawn (RRIFW, in purple), causes a change in the RRIF balance and in credit score (CS), where a change in the latter causes a change in credit limit (TCL). Thus, RRIFW is a confounder. 
+ 
+Additionally, we see that a change in After-income tax (ATI, in purple) can cause a change in the sampling weights, in credit limit and in RRSP (in brown), where a change is the latter leads to a change in the RRIF balance (since the RRIF balance is determined by the RRSP balance). 
+ 
+By accounting for the second stage in the stratified sampling design, we see that the Province (Prov, in purple) affects the stratified rural and urban areas (RU, in purple). By accounting for the clustering stage in rural strata, the clustering of geographical strata (Geo, in brown) is affected by the rural stratifications, and affects the sampling weights. The relationship between province and credit score remains the same as in figure 1.
+ 
+In figure 1, it was assumed that age affects RRIF; more precisely, age (Age, in brown) affects the amount of money withdrawn from RRIF (RRIFW, in purple), as explained in the introduction. Age is still a sample indicator, allowing it to cause changes in the sampling weights. 
+ 
+The causal relationship between RRIF and TCL is indicated by blue arrows, where there is _Credit Score_ (CS. in brown), a mediating variable along the pathway. The brown nodes indicate the variables that should not be controlled for. Here, credit score is still a mediator, so it should not be controlled for, to avoid bias. The purple nodes indicate variables that may be controlled for, but not necessarily. RRIFW is a confounder, so it needs to be controlled for. However, it is a source of potential bias, since the variable is not found in the Survey of Financial Security dataset, so it cannot be controlled for. Backdoors are present through the paths that have age, net worth, after tax income, and [geographical strata, rural/urban areas, province]. The pathway through age is handled when RRIFW is controlled for, so Age should not be controlled for (hence the brown node). 
+
+If RRSP were to be controlled for, then ATI and RRSP would no longer be confounders. However, ATI still creates a backdoor, meaning that ATI has to also be controlled for. On the other hand, controlling for ATI instead of RRSP removes the backdoor and the confounding relationship. Hence, ATI (in purple) should be controlled for, and RRSP (in brown) does not need to be controlled for. 
+
+There are still some backdoors remaining created by net worth, and [geographical strata, rural/urban areas, province]. It is enough to handle one of these two sets of variables to remove the backdoors. Our diagram indicates that net worth will not be controlled for. To control for the [geographical strata, rural/urban areas, province] pathway, any one of these three variables needs to be controlled for. Similarly, we can control for net worth, and not control for any of [geographical strata, rural/urban areas, province].
+
+There may be other confounding variables that were overlooked since we are not experts on the topic, and that creates more potential sources of bias. 
+ 
+From figure 13, we notice that there is bias from uncontrolled variables, such as RRIFW, which cannot be controlled for due to not having data for the variable. Additionally, there is bias from residual confounding, since there are variables we controlled for based on figure 1, but appear to create bias when controlled for according to figure 13, due to the introduction of new relationships. For example, we did not need to control for both net worth and province, based on figure 13.  
+ 
+Due to all these potential sources of bias, this report may not present the best model to infer a causal relationship between credit limit and RRIF.
+
+
+## iii. Further questions
+
+This study can be redone with an improved methodology which uses the bootstrap weights (obtained from sampling), and which consults a specialist on the topic to point out any missed relationships. If a different dataset with more available confounders can be found, then that can be used to get a better model that infers the causal relationship between credit limit and RRIF. 
+
+***
+
+
+# V. Citations and References {-}

@@ -1,0 +1,569 @@
+---
+title: "Relashionship between RRIFs and Credit Limit"
+author: "Catherine Al Aswad, Ali Alhakeem, Uyen Dao, Long Kim Long"
+date: " Last Updated 12/03/2020"
+output:
+  html_document:
+    fig_caption: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    df_print: kable
+    toc_float:
+      collapsed: no
+---
+
+```{r, include=FALSE}
+# Do not edit this code block/chunk
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning = FALSE, fig.width = 16/2.5, fig.height = 9/2.5)
+```
+
+
+```{r Packages}
+# Load all necessary packages here:
+library(tidyverse) 
+library(janitor)
+library(moderndive)
+library(here)
+library(knitr)
+library(readxl)
+library(MASS)    #for box-cox
+library(car)    #for vif and qqplot() and 3d graphs
+library(olsrr)   # cook's distance
+library(splines)
+library(kableExtra)
+library(survey)    # survey weight stuff
+library(svydiags)   # survey diagrams
+library(igraph)   # network stuff
+library(jtools)   # for summ() function
+
+
+
+```
+
+```{r Wrangling}
+# data wrangling code:
+#reading in the code
+# 12,429 observations
+original_data <- read_csv(here("creditdata.csv"))
+colnames(original_data) <- c("Survey_Weights" , "TotalCreditLimit" , "After_tax_income" , "mortgagePaymentAmount" , "RRIFs" , "X6" )
+
+# Variables full name: survey data, Total credit limit on all credit cards owned, After-tax income, Amount of mortgage payments, Registered retirement income funds (RRIFs) , column of NA values
+# 10,996 observations removing invalid cases
+# with invalid cases: 12,429
+tidy_data <- original_data %>%
+ dplyr::select(-c("mortgagePaymentAmount" , "X6")) %>%
+  na.omit()
+
+survey_design <- svydesign(ids=~1, weights = ~Survey_Weights, data= tidy_data)
+subpop <- subset(survey_design, TotalCreditLimit < 999996)
+
+
+```
+
+
+***
+
+
+# I. Introduction
+
+***
+
+The goal of this study is to study the relationship between Registered Retirement Income Funds (RRIFs) and credit limit on a credit card. This report assumes that a change in _RRIFs_ causes a change in _Credit Limit_, but not directly: the relationship is mediated by a _Credit Score_. When a person is retired, their balance is greatly determined by the amount of retirement funds they have, and that balance happens to be a factor in determining a person’s credit score.^[_What Factors Impact My Credit Scores?_. Credit Scores Education, EQUIFAX. Accessed November 2020. https://www.consumer.equifax.ca/personal/education/credit-score/what-impacts-credit-score/] Then, a person’s credit score is one of the variables considered by banks when calculating a person’s credit limit.^[_What is Your Credit Limit Based On_. How Your Credit Limit is Determined. Accessed November 2020. https://www.creditcardscanada.ca/education-centre/credit-card-basics/credit-limit-determined/ ] Additionally, _Income_ is a confounder in this relationship, as a change in income can cause a change in both RRIFs and credit limit. These causal relationships are justified, since income is another variable considered by banks when calculating a person’s credit limit^[_What is Your Credit Limit Based On_. How Your Credit Limit is Determined. Accessed November 2020. https://www.creditcardscanada.ca/education-centre/credit-card-basics/credit-limit-determined/ ], and a person’s current income affects how much they reserve as retirement funds. The relationship between RRIFs and Credit Limit is more complicated than this and may have more unidentified confounders, but due to the study’s limitations, a simpler model is adopted. 
+
+The data from the NESSTAR data portal and collected using the 2016 Survey of Financial Security (SFS)^[_Survey of Financial Security, 2016_. Statistical Canada Public Use Microdata Files (PUMF). 2018. Accessed November 2020 http://dli-idd-nesstar.statcan.gc.ca.proxy.library.upei.ca/webview/.] on households in Canada will be used to study these relationships. The survey has a weighted design inorder for the collected sample to be representative of the intended population. In order to reduce bias, a weighted survey design will be attempted in the study to better represent the population. The continuous response variable of interest from this data set is the _Total Credit Limit on all credit cards owned by the household members_ (TCL). The main continuous explanatory variable of interest is the _Registered Retirement Income Funds for a household_ (RRIF). The confounding variable identified in the dataset is the _Total After-tax Income of a household_ (AIT) variable. Data about the household’s total Credit Score is unavailable, but that is not an issue since Credit Score is a mediating variable and will not be controlled for in order to avoid creating bias. The relationship between these variables is illustrated in figure 1.
+
+
+
+```{r network_fig}
+links <- data.frame(
+    source=c("ATI", "CS", "RRIF","ATI"),
+    target=c("TCL", "TCL", "CS", "RRIF")
+    )
+
+network <- graph_from_data_frame(d=links, directed=T) 
+
+plot.igraph(network, 
+            asp = 0.7,
+     vertex.size= 40, 
+     edge.arrow.size= 0.75, 
+     edge.color="black", 
+     vertex.color="#f9f906",
+     vertex.frame.color="black",
+     vertex.label.color="black",
+     vertex.shape = "square",
+     main="Figure 1: Relashionship Diagram")
+
+```
+
+
+The dataset had no missing values for the chosen variables. However, there were households who had valid reasons to not give their Total Credit Limit on all credit cards owned by their household members (the reason for the skip was not provided), and so these missing values cannot be imputed. As a result, this study focuses on the subpopulation of Canadian households that do have a credit limit. The sample representing this subpopulation has 10,996 households out of the original 12,429 household sample, which is about 88.47% of households from the original sample.
+
+
+```{r sample_table}
+tidy_data %>%
+  filter(TotalCreditLimit < 999996) %>%
+  sample_n(5) %>%
+  kable(caption = "Table 1.Sample for 5 randomly chosen households of the data set used in this study") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+
+
+
+# II. Exploratory data analysis
+
+
+***
+
+Table 2 shows some statistics for the variable total credit limit on all credit cards owned. We can observe from Figure 2 that the distribution of this chosen response variable is extremely right-skewed and contains very high-leverage points.
+
+```{r summary_table}
+
+mean1 <- svymean(~TotalCreditLimit,design=subpop)
+var1 <- svyvar(~TotalCreditLimit, design=subpop)
+quantile1 <- svyquantile(~TotalCreditLimit, design=subpop, c(.25,.5,.75), ci=FALSE)
+t1 <- cbind(mean1, var1, quantile1)
+
+# mean2 <- svymean(~RRIFs,design=subpop)
+# var2 <- svyvar(~RRIFs, design=subpop)
+# quantile2 <- svyquantile(~RRIFs, design=subpop, c(.25,.5,.75), ci=FALSE)
+# t2 <- cbind(mean2, var2, quantile2)
+# 
+# mean3 <- svymean(~After_tax_income,design=subpop)
+# var3 <- svyvar(~After_tax_income, design=subpop)
+# quantile3 <- svyquantile(~After_tax_income, design=subpop, c(.25,.5,.75), ci=FALSE)
+# t3 <- cbind(mean3, var3, quantile3)
+# 
+# t <- rbind(t1,t2,t3)
+
+kable(t1, caption = "Table 2: Summary for the Total credit limit on all credit cards owned",
+      col.names = c("mean" , "var", "Q1", "Q2", "Q3")) %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r   D_TCL, fig.cap = "Figure 2. Distribution for the Total credit limit on all credit cards owned by members the household ", fig.align = "center"}
+
+
+svyhist(~TotalCreditLimit, 
+        subpop, 
+        xlab="Total credit limit on all credit cards owned",
+        col = "#6109de", 
+        probability = FALSE,
+        breaks = 30,
+        main = "")
+
+
+```
+
+The distribution of the after-tax income of the household (Figure 3) and registered retirement income funds (Figure 4) also face the same problem of severe right-skewness and influential outliers. 
+
+```{r   D_ATI, fig.cap = "Figure 3. Distribution for the after-tax income of the household ", fig.align = "center"}
+
+svyhist(~After_tax_income, 
+        subpop, 
+        xlab="After-tax income",
+        col = "#6109de", 
+        probability = FALSE,
+        breaks = 30,
+        main = "")
+
+
+```
+
+
+```{r   D_RRIF, fig.cap = "Figure 4. Distribution for the Registered retirement income funds (RRIFs) ", fig.align = "center"}
+
+
+svyhist(~RRIFs, 
+        subpop, 
+        xlab="Registered retirement income funds (RRIFs)",
+        col = "#6109de", 
+        probability = FALSE,
+        breaks = 27,
+        main = "")
+
+
+```
+
+In figure 5, the scatterplot shows that there seems to be some positive correlation between the total credit limit and the after-tax income, which implies that households with more after-tax income enjoy a better total credit limit (this is supported by figure 1, which shows that causal effect of ATI on TCL)
+
+```{r   SC_ATI, fig.cap = "Figure 5. Interactive Scatterplot for the Total credit limit on all credit cards owned against after-tax income. The red line is the best fit line. The blue curve is the local polynomial smoothing curve.", fig.align = "center"}
+
+
+# local polynomial smoothing
+stline1 <- svyglm(TotalCreditLimit ~ After_tax_income, subpop)
+stline2 <- svysmooth(TotalCreditLimit ~ After_tax_income, subpop, bandwidth=500000)
+
+conf_1 = data.frame(predict(stline1,
+               interval="confidence",
+               level=.95) )
+lwr = conf_1$link - conf_1$SE
+uppr = conf_1$link + conf_1$SE
+
+
+svyplot(TotalCreditLimit ~ After_tax_income, 
+        subpop, 
+        style = c("transparent"),
+        basecol = "gold",
+        alpha=c(0.4, 0.9),
+        xlab="After-tax income",
+        ylab="Total credit limit on all credit cards")
+lines(stline2, col="#3080cf")
+abline(stline1, col="red")
+lines(model.frame(subpop)$After_tax_income, lwr, col = "pink")
+lines(model.frame(subpop)$After_tax_income, uppr, col = "pink")
+
+
+```
+
+The scatter plot in Figure 6, however, seems to suggest that there is no relationship between the total credit limit and the registered retirement income funds. This is against our expectation given our knowledge of their casual relationship in Figure 1.
+
+```{r   SC_RRIF, fig.cap = "Figure 6. Interactive Scatterplot for the Total credit limit on all credit cards owned against Registered retirement income funds (RRIFs). The red line is the best fit line. The blue curve is the local polynomial smoothing curve.", fig.align = "center"}
+
+
+# local polynomial smoothing
+stline3 <- svyglm(TotalCreditLimit ~ RRIFs, subpop)
+stline4 <- svysmooth(TotalCreditLimit ~ RRIFs, subpop,  bandwidth=100000)
+
+conf_1 = data.frame(predict(stline3,
+               interval="confidence",
+               level=.95) )
+lwr = conf_1$link - conf_1$SE
+uppr = conf_1$link + conf_1$SE
+
+svyplot(TotalCreditLimit ~ RRIFs, 
+        subpop, 
+        style = c("transparent"),
+        basecol = "gold",
+        alpha=c(0.4, 0.9),
+        xlab="Registered retirement income funds (RRIFs)",
+        ylab="Total credit limit on all credit cards")
+lines(stline4, col="#3080cf")
+abline(stline3, col="red")
+lines(model.frame(subpop)$RRIFs, lwr, col = "pink")
+lines(model.frame(subpop)$RRIFs, uppr, col = "pink")
+
+
+
+```
+
+***
+
+
+
+# III. Multiple linear regression
+
+## i. Methods
+
+Our group intended to use a linear model on the given data for the sake of simplicity, then performed a residual analysis,  as an in-sample validation method, to detect any systematic departure from the assumptions upon which the model is built: normality, independence, and homoscedasticity of the residuals.
+
+Since the exploratory part shows that the distribution of our Y variable is extremely right-skewed and has many influential outliers, we have decided that it is in our best interest to transform the data to tackle this problem. We also recognize the danger of overfitting, so we will not be using box-cox to optimize the transformation (for this set of data), but rather go with a more “natural” type of transformation: taking the cube root.
+
+As a result, we observe that, though not perfect, the plots have shown more promising results: the distribution of error terms is more bell-shaped, the normal Q-Q plot shows an almost straight line. However, the residual scatterplots all show signs of heteroscedasticity, and we do not know whether this is pure or impure heteroscedasticity (meaning if any important factor/predictor was left out and the effect was absorbed into the residuals). We also recognize that while heteroscedasticity does not cause bias in the coefficient estimates, it does make them less precise. Lower precision increases the likelihood that the coefficient estimates are further from the correct population value.
+
+```{r   D_TCL_t, fig.cap = "Figure 7. Distribution for the Total credit limit on all credit cards owned raised to 0.333.", fig.align = "center"}
+
+
+svyhist(~I(TotalCreditLimit^(1/3)), 
+        subpop, 
+        xlab="(Total credit limit on all credit cards owned)^0.3333",
+        col = "#f9f906", 
+        probability = FALSE,
+        breaks = 25,
+        main = "")
+
+# svyhist(~I(log(TotalCreditLimit)), 
+#         subpop, 
+#         xlab="(Total credit limit on all credit cards owned)^0.3333",
+#         col = "#f9f906", 
+#         probability = FALSE,
+#         breaks = 30,
+#         main = "")
+
+
+
+```
+
+Using the following model: 
+
+```{r  primary_model}
+
+
+first_model = svyglm( I(TotalCreditLimit^(1/3)) ~ RRIFs + After_tax_income , design = subpop)
+first_model_2 = svyglm( I(TotalCreditLimit^(1/3)) ~ RRIFs  , design = subpop)
+
+ # summ(first_model,
+ #           digits = getOption("jtools-digits", default = 6))
+ # summ(first_model_2,
+ #           digits = getOption("jtools-digits", default = 6))
+ # 
+
+
+summary(first_model)$call
+
+
+
+```
+
+
+
+```{r mod_transf, fig.cap = "Figure ??. Graph resulting from a Box Cox Test", fig.align = "center", include = FALSE}
+
+# first_model_b = svyglm( TotalCreditLimit ~ RRIFs + After_tax_income , design = survey_design)
+# 
+# transformation_test = MASS::boxcox(first_model_b)
+# lambda = transformation_test$x[which(transformation_test$y == max(transformation_test$y))]
+#lambda
+```
+
+```{r qqplots ,fig.cap= "Figure 8. Normal Q-Qplot for the Total credit limit on all credit cards owned raised to 0.333", fig.align = "center"}
+
+b <- model.frame(subpop)
+qqnorm((b$TotalCreditLimit)^(1/3), pch = 1, frame = TRUE)
+qqline((b$TotalCreditLimit)^(1/3), col = "#3080cf", lwd = 2)
+
+```
+
+```{r rez_dis, fig.cap = "Figure 9. Residuals distribution for the statistical model", fig.align = "center"}
+
+regression_points <-  data.frame(resid(first_model))
+colnames(regression_points) <- "residuals"
+ggplot(regression_points, aes(x = residuals)) +
+  geom_histogram(bins = 20, colour="#ff6600", fill = "#3080cf", alpha = 0.4) +
+  labs(x = "Residuals") +
+  theme_bw()
+
+
+```
+
+
+```{r rez_fv, fig.cap = "Figure 10. Residuals graph for the fitted values, with a local polynomial smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+
+regression_points <-  resid(first_model)
+pred_points <-  predict(first_model)
+
+
+# local polynomial smoothing
+stline2 <- svysmooth(regression_points ~ pred_points[1:length(regression_points)], subpop,  bandwidth=20)
+
+svyplot(regression_points ~ pred_points[1:length(regression_points)],
+        subpop,
+        style = c("transparent"),
+        alpha=c(0.3, 0.9),
+        xlab="Fitted Values",
+        ylab="Residuals")
+lines(stline2, col="#3080cf")
+abline(h = 0, col="red")
+
+```
+
+```{r rez_ATI, fig.cap = "Figure 11. Residuals graph for After-tax income, with a local polynomial smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+rstandard_val <- rstandard(first_model)
+
+stline4 <- svysmooth(rstandard_val ~ After_tax_income, subpop,  bandwidth=500000)
+
+svyplot(rstandard_val ~ After_tax_income, 
+        subpop, 
+        style = c("transparent"),
+        alpha=c(0.3, 0.9),
+        xlab="After-tax income",
+        ylab="rstandard")
+lines(stline4, col="#3080cf")
+abline(h = 0, col="red")
+
+```
+
+```{r rez_RIFF, fig.cap = "Figure 12. Residuals graph for the Registered retirement income funds (RRIFs), with a local polynomial smoothing curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+rstandard_val <- rstandard(first_model)
+
+
+stline4 <- svysmooth(rstandard_val ~ RRIFs, subpop,  bandwidth=100000)
+
+svyplot(rstandard_val ~ RRIFs, 
+        subpop, 
+        style = c("transparent"),
+        alpha=c(0.3, 0.9),
+        xlab="Registered retirement income funds (RRIFs)",
+        ylab="rstandard")
+lines(stline4, col="#3080cf")
+abline(h = 0, col="red")
+
+
+```
+
+
+
+In table 3, we see that the VIF value for the variables are between 1 and 5. This indicates that there is a moderate correlation between the predictor variables. Since there is not a lot of multicollinearity between the predictor variables, the statistical power of the model is not greatly reduced. 
+
+```{r   model_vifs}
+
+kable(car::vif(first_model),
+      caption = "Table 3: VIF table",
+      col.names = "VIF") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+***
+
+
+## ii. Model Results and Interpretation
+
+
+Our model is the following:
+
+$$
+\begin{aligned}\widehat{Y}_{TCL}^{1/3} =& b_{0} + b_{RRIFs} \cdot (x_1) + b_{ATI} \cdot (x_2) \\
+ = & 20.77 + 0.000006 \cdot (x_1)  + 0.00005	 \cdot (x_2)
+\end{aligned} 
+$$
+
+***
+
+Table 4: Summary Table:
+```{r   transf_model_summary_overall}
+
+summ(first_model,
+     digits = getOption("jtools-digits", default = 6))
+
+```
+
+
+The intercept of 20.77178 represents the average total credit limit on all credit cards owned raised to 0.333 with 0 registered retirement income funds and 0 after-tax income.
+
+The slope estimation for the registered retirement income funds is 0.000006, which lets us know that the average total credit limit on all credit cards owned raised to 0.333 increases by 0.000006 units with every unit increase of the registered retirement income funds, given the after-tax income being equal.
+
+The slope estimation for the after-income is 0.00005, which lets us know that the average total credit limit on all credit cards owned raised to 0.333 increases by 0.00005 units with every unit increase of after-income, given the registered retirement income funds being equal.
+
+Examining our adjusted R-squared we find it is 0.16 which means our model explains only 16% in variation of the observations. 
+
+Using our confidence intervals table (Table 6) output, we are going to test different null hypotheses.
+
+$$\begin{aligned} H_0:&\beta_{0} = 0 \\\ \mbox{vs }H_A:& \beta_{0} \neq 0 \end{aligned}$$
+For the intercept, we find the 95% confidence intervals for it to be [2.024758e+01, 2.129599e+01], indicating that it is implausible to be zero at a 95% confidence level. We can also see that the p-value is small at ~0.000001 which means we can reject the null hypothesis that the intercept is 0 for the alternate hypothesis that it is non-zero and positive.
+
+
+
+$$\begin{aligned} H_0:&\beta_{RRIFs} = 0 \\\ \mbox{vs }H_A:& \beta_{RRIFs} \neq 0 \end{aligned}$$
+
+For the registered retirement income funds, we find the 95% confidence interval for the rate of change is [4.656006e-06, 7.971796e-06], indicating that it is implausible to be zero at a 95% confidence level. We can also see that the p-value is small at ~0.000001 which means we can reject the null hypothesis that the slope is 0 for the alternate hypothesis that it is non-zero and positive.
+
+
+$$\begin{aligned} H_0:&\beta_{ATI} = 0 \\\ \mbox{vs }H_A:& \beta_{ATI} \neq 0 \end{aligned}$$
+
+
+For the after-income tax, we find the 95% confidence interval for the rate of change is [4.319984e-05, 5.644319e-05], indicating that the slope is plausibly positive at a 95% confidence level. We can also see that the p-value is very small at ~0.000001 which means we can reject the null hypothesis that the slope is 0 for the alternate hypothesis that it is non-zero and positive.
+
+
+
+Table 6: 95% Confidence intervals for the model coefficients.
+```{r   transf_model_CI}
+
+confint(first_model)
+```
+
+***
+
+
+## iii. Inference for multiple regression
+
+Interpretation of the ANOVA table results form the table 7:
+The Registered retirement income funds (RRIFs) with one degree of freedom has a p-value < 2.2e-16. We conclude that the Registered retirement income funds (RRIFs) alone in the model explains a significant amount of variability.
+The After tax income with one degree of freedom has a p-value < 2.2e-16. We can conclude that the model with After tax income, given that the Registered retirement income funds (RRIFs) is in the model, is statistically significant.
+
+Table 7. ANOVA Table
+```{r   transf_anova_table}
+ anova(first_model)
+
+```
+
+The 95% Prediction intervals for the predicted transformed Total credit limit (raised to the power of ⅓) are presented in table 6. For example, a household with After income tax median equals 61458.05, and has RRIFs equal to 0 the transformed total credit limit is predicted to be  23.83372.
+
+
+It is similar to other RRIFs 10,10000,500000, 1000000, respectively for After-income tax median = 61458.05, the transformed total credit limit is predicted in the table 7 below:
+
+```{r transf_model_PI}
+
+
+ATI_M <- quantile1 <- svyquantile(~After_tax_income, design=subpop, c(.5), ci=FALSE)   # 61458.05
+
+
+values = c(0, 10, 10000, 500000, 1000000)
+
+PI <- data.frame(predict(first_model, 
+              newdata=data.frame(After_tax_income = 61458.05, 
+                                 RRIFs = values), 
+              interval="prediction", level=.95))
+PI$RRIF <- values
+colnames(PI) <- c("Point estimate" , "SE" , "RRIF")
+row.names(PI) <- NULL
+kable(PI[, c(3, 1, 2)],
+      caption = "Table 8. The 95% Prediction intervals for the Total credit limit on all credit cards owned, raised to 0.333, where RRIFs = 0, 10, 10000, 500000, 1000000, respectively, for After-income tax median = 61458.05") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+# IV. Discussion 
+
+## i. Conclusions
+
+Our analysis shows that there seems to be some relationship between the total credit limit on all credit cards owned and after-tax income and registered retirement income funds. This is very much in line with our expectations presented in the causal diagram at the beginning of the report. However, our model as a whole explains only 16% in variation of the observations, is not a too promising number, indicating that we could consider other omitted variables/models.
+
+
+## ii. Limitations
+
+This report has many sources of bias due to present limitations. One source of bias arises from the sample not being correctly adjusted to account for the survey weight design due to our inexperience in handling bootstrapping weights, which makes the sample not representative of the population. Another modeling approach was considered, which is to ignore the sample weights and then handle the variables used in the sampling and weighting process as confounders in the model. However, we did not take this approach due to considering it near the project deadline.
+ 
+Failing to control for other existing confounding variables that affect our variables of interest also create bias. As mentioned in the introduction, the relationships between the variables is more complicated than previously stated. A possible more intricate relationship diagram can be seen in figure 13. It can still be assumed that a change in RRIF, causes a change in credit score (CS), which causes a change in credit limit (TCL). Here, credit score is still a mediator, so it should not be controlled for, to avoid bias. However, another relationship is shown, where a change in the amount of money from the RRIF is withdrawn (RRIFW), causes a change in the RRIF balance and in credit score (CS), where a change in the latter causes a change in credit limit (TCL). Thus, RRIFW is a confounder but also a source of potential bias, since the variable is not found in the Survey of Financial Security dataset, so it cannot be controlled for. Additionally, we see that a change in After-income tax (ATI) can cause a change in credit limit, and can cause a change in RRSP, which leads to a change in the RRIF balance. In this relationship, either ATI or RRSP can be considered confounders, and only one has to be controlled for in order to handle this relationship between TCL and RRIF. This report handles this relationship by controlling for ATI rather than RRSP. There may be other confounding variables that were overlooked since we are not experts on the topic, and that creates more potential sources of bias. 
+
+```{r network_fig_complex}
+
+#CO: credit owed
+# rrifw : rrif yearly withdrawl
+# WTR:  withholding tax rates
+links <- data.frame(
+    source=c("ATI", "CS", "RRIF","ATI", "RRSP", "RRIFW", "RRIFW"),
+    target=c("TCL", "TCL", "CS", "RRSP", "RRIF", "RRIF", "CS")
+    )
+
+network <- graph_from_data_frame(d=links, directed=T) 
+
+
+plot.igraph(network, 
+            asp = 1,
+     vertex.size= 30, 
+     edge.arrow.size= 0.5, 
+     edge.color="black", 
+     vertex.color="#f9f906",
+     vertex.frame.color="black",
+     vertex.label.color="black",
+     vertex.shape = "square",
+     main="Figure 13: Relashionship Diagram")
+
+# vcol[V(net)$media=="Wall Street Journal"] <- "gold"
+# plot(net, vertex.color=vcol, edge.color=ecol)
+
+```
+
+
+ 
+Due to the biases from the sample and from failing to control for all potential confounding variables, the model in this report may not be the best to infer a causal relationship between credit limit and RRIF.
+
+
+## iii. Further questions
+
+This study can be redone with an improved methodology which uses either the bootstrap weights or a non-weighted model that accounts for the sampling variables. If a different dataset that has more available confounders can be found, then that can be used to get a better model that infers the causal relationship between credit limit and RRIF. Also, this study only explored  a linear model, so maybe a more flexible model could be considered in another study.
+
+***
+
+
+# V. Citations and References {-}

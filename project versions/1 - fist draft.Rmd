@@ -1,0 +1,416 @@
+---
+title: "Relashionship between RRIFs and Credit Limit"
+author: "Catherine Al Aswad, Ali Alhakeem, Uyen Dao, Long Kim Long"
+date: " Last Updated 11/29/2020"
+output:
+  html_document:
+    fig_caption: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    df_print: kable
+    toc_float:
+      collapsed: no
+---
+
+```{r, include=FALSE}
+# Do not edit this code block/chunk
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning = FALSE, fig.width = 16/2.5, fig.height = 9/2.5)
+```
+
+
+```{r Packages}
+# Load all necessary packages here:
+library(tidyverse) 
+library(janitor)
+library(moderndive)
+library(here)
+library(knitr)
+library(readxl)
+library(MASS)    #for box-cox
+library(car)    #for vif and qqplot() and 3d graphs
+library(plotly)   # for interactive graphs
+library(olsrr)   # cook's distance
+library(splines)
+library(kableExtra)
+library(survey)    # survey weight stuff
+library(igraph)   # network stuff
+library(jtools)   # for summ() function
+library(viridis)   # color scheme
+
+
+
+```
+
+```{r Wrangling}
+# data wrangling code:
+#reading in the code
+# 12,429 observations
+original_data <- read_csv(here("creditdata.csv"))
+colnames(original_data) <- c("Survey_Weights" , "TotalCreditLimit" , "After_tax_income" , "mortgagePaymentAmount" , "RRIFs" , "X6" )
+
+# Variables full name: survey data, Total credit limit on all credit cards owned, After-tax income, Amount of mortgage payments, Registered retirement income funds (RRIFs) , column of NA values
+# 10,996 observations removing invalid cases
+# with invalid cases: 12,429
+tidy_data <- original_data %>%
+ dplyr::select(-c("mortgagePaymentAmount" , "X6")) %>%
+ filter(TotalCreditLimit < 999996) %>%
+ na.omit()
+
+ 
+```
+
+
+***
+
+
+# I. Introduction
+
+***
+
+```{r sample_table}
+# ????? display survey weights variable?
+
+tidy_data %>%
+  dplyr::select(-c("Survey_Weights")) %>%
+  sample_n(5) %>%
+  kable(caption = "Table 1.Sample for 5 randomly chosen households of the data set used in this study") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+
+```{r network_fig}
+links <- data.frame(
+    source=c("ATI", "CS", "RRIF","ATI"),
+    target=c("CS", "TCL", "CS", "RRIF")
+    )
+
+network <- graph_from_data_frame(d=links, directed=T) 
+
+plot.igraph(network, 
+            asp = 0.7,
+     vertex.size= 40, 
+     edge.arrow.size= 0.75, 
+     edge.color="black", 
+     vertex.color="#f9f906",
+     vertex.frame.color="black",
+     vertex.label.color="black",
+     vertex.shape = "square",
+     main="Figure 1: Relashionship Diagram")
+
+```
+
+
+
+# II. Exploratory data analysis
+
+
+***
+```{r summary_table}
+tidy_data %>% 
+  summarize(n = n(), 
+            min = min(TotalCreditLimit , na.rm = T), 
+            median = median(TotalCreditLimit , na.rm = T), 
+            mean = mean(TotalCreditLimit , na.rm = T), 
+            max = max(TotalCreditLimit , na.rm = T),
+            sd = sd(TotalCreditLimit , na.rm = T))  %>%
+  kable(caption = "Table 2: Summary for the Total credit limit on all credit cards owned") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+```{r   D_TCL, fig.cap = "Figure 2. Distribution for the Total credit limit on all credit cards owned by members the household ", fig.align = "center"}
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit)) +
+  geom_histogram(bins = 25, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Total credit limit on all credit cards owned") +
+    theme_bw()
+
+
+```
+
+
+```{r   D_ATI, fig.cap = "Figure 3. Distribution for the after-tax income of the household ", fig.align = "center"}
+
+ggplot(tidy_data,  aes(x= After_tax_income)) +
+  geom_histogram(bins = 25, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "After-tax income") +
+    theme_bw()
+
+
+```
+
+
+```{r   D_RRIF, fig.cap = "Figure 4. Distribution for the Registered retirement income funds (RRIFs) ", fig.align = "center"}
+
+ggplot(tidy_data,  aes(x= RRIFs)) +
+  geom_histogram(bins = 25, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Registered retirement income funds (RRIFs)") +
+    theme_bw()
+
+
+```
+
+
+```{r   SC_ATI, fig.cap = "Figure 5. Interactive Scatterplot for the Total credit limit on all credit cards owned against after-tax income. The red line is the best fit line. The blue curve is the Loess curve.", fig.align = "center"}
+
+
+
+p_1 <- ggplot(tidy_data, aes(x= After_tax_income, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "yellowgreen") +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "Total credit limit on all credit cards", x = "After-tax income") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5))
+
+ggplotly(p_1)
+
+
+```
+
+
+```{r   SC_RRIF, fig.cap = "Figure 6. Interactive Scatterplot for the Total credit limit on all credit cards owned against Registered retirement income funds (RRIFs). The red line is the best fit line. The blue curve is the Loess curve.", fig.align = "center"}
+
+
+p_1 <- ggplot(tidy_data, aes(x= RRIFs, y= TotalCreditLimit)) +
+  geom_point(alpha = 0.3, col = "yellowgreen") +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1) +
+  labs(y = "otal credit limit on all credit cards", x = "Registered retirement income funds (RRIFs)") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                                    fill=NA,
+                                    size=0.5))
+
+ggplotly(p_1)
+
+
+```
+
+***
+
+
+
+# III. Multiple linear regression
+
+## i. Methods
+
+
+```{r updated_y}
+
+tidy_data["TotalCreditLimit_transf"] <- (tidy_data$TotalCreditLimit)^(1/3)
+
+```
+
+
+
+```{r   D_TCL_t, fig.cap = "Figure 7. Distribution for the Total credit limit on all credit cards owned raised to 0.333.", fig.align = "center"}
+
+ggplot(tidy_data,  aes(x= TotalCreditLimit_transf)) +
+  geom_histogram(bins = 25, color = "#f9f906", fill = "#ff6600", alpha = 0.7) +
+  labs(x = "(Total credit limit on all credit cards owned)^0.3333") +
+    theme_bw()
+
+
+```
+
+Using the following model: 
+
+```{r  primary_model}
+
+
+survey_design = svydesign(ids=~1, weights = ~Survey_Weights, data= tidy_data)
+
+first_model = svyglm( TotalCreditLimit_transf ~ RRIFs + After_tax_income , design = survey_design)
+
+# no weights
+ first_model_2 = lm( TotalCreditLimit_transf ~ RRIFs + After_tax_income , data = tidy_data)
+# summ(first_model,
+#           digits = getOption("jtools-digits", default = 6))
+# summ(first_model_2,
+#           digits = getOption("jtools-digits", default = 6))
+
+
+
+
+summary(first_model)$call
+
+```
+
+
+
+```{r mod_transf, fig.cap = "Figure ??. Graph resulting from a Box Cox Test", fig.align = "center", include = FALSE}
+
+# first_model_b = svyglm( TotalCreditLimit ~ RRIFs + After_tax_income , design = survey_design)
+# 
+# transformation_test = MASS::boxcox(first_model_b)
+# lambda = transformation_test$x[which(transformation_test$y == max(transformation_test$y))]
+#lambda
+```
+
+```{r qqplots ,fig.cap= "Figure 8. Normal Q-Qplot for the Total credit limit on all credit cards owned raised to 0.333", fig.align = "center"}
+
+qqnorm(tidy_data$TotalCreditLimit_transf, pch = 1, frame = TRUE) 
+qqline(tidy_data$TotalCreditLimit_transf, col = "#3080cf", lwd = 2)
+
+
+```
+
+```{r rez_dis, fig.cap = "Figure 9. Residuals distribution for the statistical model", fig.align = "center"}
+
+regression_points <-  data.frame(resid(first_model))
+colnames(regression_points) <- "residuals"
+ggplot(regression_points, aes(x = residuals)) +
+  geom_histogram(bins = 20, colour="#ff6600", fill = "#3080cf", alpha = 0.4) +
+  labs(x = "Residuals") +
+  theme_bw()
+
+```
+
+
+```{r rez_fv, fig.cap = "Figure 10. Residuals graph for the fitted values, with a Lowess curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+ggplot(tidy_data, aes(x = predict(first_model), y = resid(first_model))) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "Residuals", x = "Fitted Values") +
+  theme_bw()
+
+```
+
+```{r rez_ATI, fig.cap = "Figure 11. Residuals graph for After-tax income, with a Lowess curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = After_tax_income, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "After-tax income") +
+  theme_bw()
+
+```
+
+```{r rez_RIFF, fig.cap = "Figure 12. Residuals graph for the Registered retirement income funds (RRIFs), with a Lowess curve in blue and a horizontal line at zero in red.", fig.align = "center"}
+
+rstandard_val <- rstandard(first_model)
+
+ggplot(tidy_data, aes(x = RRIFs, y = rstandard_val)) +
+  geom_point(shape = 1) +
+  geom_hline(yintercept = 0,  size = 0.5, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.7, colour="#3080cf", alpha = 0.3) +
+  labs(y = "rstandard", x = "Registered retirement income funds (RRIFs)") +
+  theme_bw()
+
+```
+
+
+```{r   model_vifs}
+
+kable(car::vif(first_model),
+      caption = "Table 3: VIF table") %>%
+  kable_styling(full_width = F)
+
+
+```
+
+***
+
+
+## ii. Model Results and Interpretation
+
+
+Our model is the following:
+
+$$
+\begin{aligned}\widehat{Y}_{TCL}^{1/3} =& b_{0} + b_{RRIFs} \cdot (x_1) + b_{ATI} \cdot (x_2) \\
+ = & 20.77 + 0.000006 \cdot (x_1)  + 0.00005	 \cdot (x_2)
+\end{aligned} 
+$$
+
+***
+
+Table 4: Summary Table:
+```{r   transf_model_summary_overall}
+
+summ(first_model,
+     digits = getOption("jtools-digits", default = 6))
+```
+
+
+$$\begin{aligned} H_0:&\beta_{0} = 0 \\\ \mbox{vs }H_A:& \beta_{0} \neq 0 \end{aligned}$$
+$$\begin{aligned} H_0:&\beta_{RRIFs} = 0 \\\ \mbox{vs }H_A:& \beta_{RRIFs} \neq 0 \end{aligned}$$
+$$\begin{aligned} H_0:&\beta_{ATI} = 0 \\\ \mbox{vs }H_A:& \beta_{ATI} \neq 0 \end{aligned}$$
+
+
+Table 6: 95% Confidence intervals for the model coefficients.
+```{r   transf_model_CI}
+
+confint(first_model)
+```
+
+***
+
+
+## iii. Inference for multiple regression
+
+Table 7. ANOVA Table
+```{r   transf_anova_table}
+ anova(first_model)
+
+```
+
+
+```{r transf_model_PI}
+
+
+ATI_M <- tidy_data %>% 
+  summarize(median = median(After_tax_income , na.rm = T))     # 68625
+
+RRIF_M <- tidy_data %>% 
+  summarize(median = median(RRIFs , na.rm = T))     # 0
+values = c(0, 10, 10000, 500000, 1000000)
+
+PI <- data.frame(predict(first_model, 
+              newdata=data.frame(After_tax_income = 68625, 
+                                 RRIFs = values), 
+              interval="prediction", level=.95))
+PI$RRIF <- values
+colnames(PI) <- c("Point estimate" , "SE" , "RRIF")
+row.names(PI) <- NULL
+kable(PI[, c(3, 1, 2)],
+      caption = "Table 8. The 95% Prediction intervals for the Total credit limit on all credit cards owned, raised to 0.333, where RRIFs = 0, 10, 10000, 500000, 1000000, respectively, for After-income tax median = 68625.") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+# IV. Discussion 
+
+## i. Conclusions
+
+
+## ii. Limitations
+
+
+## iii. Further questions
+
+
+
+***
+
+
+# V. Citations and References {-}
